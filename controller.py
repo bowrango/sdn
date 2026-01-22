@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 
-"""This is the Controller Starter Code for ECE50863 Lab Project 1
-Author: Xin Du
-Email: du201@purdue.edu
-Last Modified Date: December 9th, 2021
+"""Controller Code for ECE50863 Lab Project 1
+Author: Matt Bowring
+Email: mbowring@purdue.edu
 """
 
 import sys
 import socket
 import json
 from datetime import date, datetime
+import heapq
 
 # Please do not modify the name of the log file, otherwise you will lose points because the grader won't be able to find your log file
 LOG_FILE = "Controller.log"
@@ -135,10 +135,10 @@ def bootstrap(port, config_file):
                 topology[switch1].append((switch2, dist))
                 topology[switch2].append((switch1, dist))
 
-    # Controller binds to a well-known port number (UDP)
+    # Controller binds to a well-known port number
     controller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     controller.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    controller.bind(('localhost', port))
+    controller.bind(('127.0.0.1', port))
 
     print(f"Controller listening on port {port} (UDP)")
 
@@ -197,6 +197,90 @@ def bootstrap(port, config_file):
 
     return controller, switches, topology
 
+def dijkstra(source, topology, num_switches):
+    """Compute shortest paths from source to all other switches using Dijkstra's algorithm"""
+    # Initialize distances and previous nodes
+    distances = {i: float('inf') for i in range(num_switches)}
+    distances[source] = 0
+    previous = {i: None for i in range(num_switches)}
+    visited = set()
+
+    # Priority queue: (distance, node)
+    pq = [(0, source)]
+    while pq:
+        current_dist, current = heapq.heappop(pq)
+        if current in visited:
+            continue
+
+        visited.add(current)
+
+        for neighbor, cost in topology.get(current, []):
+            distance = current_dist + cost
+            if distance < distances[neighbor]:
+                distances[neighbor] = distance
+                previous[neighbor] = current
+                heapq.heappush(pq, (distance, neighbor))
+
+    # Build next hop table
+    table = {}
+    for dest in range(num_switches):
+        if dest == source:
+            table[dest] = source
+        elif distances[dest] == float('inf'):
+            table[dest] = -1
+        else:
+            # Trace back to find first hop
+            path_node = dest
+            while previous[path_node] != source and previous[path_node] is not None:
+                path_node = previous[path_node]
+            table[dest] = path_node if previous[path_node] == source else -1
+
+    return distances, table
+
+def compute_routing_tables(topology, num_switches, alive_switches=None):
+    """Compute routing tables for all switches"""
+    routing_tables = []
+    for switch_id in range(num_switches):
+        distances, next_hops = dijkstra(switch_id, topology, num_switches)
+
+        for dest_id in range(num_switches):
+            if distances[dest_id] == float('inf'):
+                # Unreachable
+                routing_tables.append([switch_id, dest_id, -1, 9999])
+            else:
+                routing_tables.append([
+                    switch_id,
+                    dest_id,
+                    next_hops[dest_id],
+                    int(distances[dest_id])
+                ])
+
+    return routing_tables
+
+def send_routing_updates(controller_socket, switches, routing_tables):
+    """Send routing updates to all switches"""
+    # Group routing table entries by switch
+    switch_routes = {}
+    for entry in routing_tables:
+        switch_id = entry[0]
+        if switch_id not in switch_routes:
+            switch_routes[switch_id] = []
+        switch_routes[switch_id].append(entry)
+
+    # Send routing update to each switch
+    for switch_id, routes in switch_routes.items():
+        if switch_id in switches:
+            routing_update = {
+                'type': 'ROUTING_UPDATE',
+                'routes': routes
+            }
+
+            controller_socket.sendto(
+                json.dumps(routing_update).encode(),
+                (switches[switch_id]['host'], switches[switch_id]['port'])
+            )
+            print(f"Sent Routing Update to switch {switch_id}")
+
 def main():
     # Check for number of arguments and exit if host/port not provided
     num_args = len(sys.argv)
@@ -210,7 +294,20 @@ def main():
     # Setup socket connection to switches
     controller, switches, topology = bootstrap(port, config_file)
 
-    # Path Computation
+    # Compute routing tables
+    num_switches = len(switches)
+    routing_tables = compute_routing_tables(topology, num_switches)
+
+    # Log routing update
+    routing_table_update(routing_tables)
+
+    # Send routing updates to all switches
+    send_routing_updates(controller, switches, routing_tables)
+
+    print("\nRouting computation and updates complete")
+
+    # Keep controller running
+    # TODO: Handle topology changes (switch/link failures)
 
 if __name__ == "__main__":
     main()

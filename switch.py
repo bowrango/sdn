@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 
-"""This is the Switch Starter Code for ECE50863 Lab Project 1
-Author: Xin Du
-Email: du201@purdue.edu
-Last Modified Date: December 9th, 2021
+"""Switch Code for ECE50863 Lab Project 1
+Author: Matt Bowring
+Email: mbowring@purdue.edu
 """
 
 import sys
@@ -91,12 +90,12 @@ def write_to_log(log):
 
 def register_with_controller(switch_id, controller_host, controller_port):
     # Create a UDP socket for communication with controller and other switches
-    switch_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    switch_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    switch_socket.bind(('localhost', 0))  # Bind to any available port
+    switch = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    switch.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    # Get the port that was assigned
-    switch_port = switch_socket.getsockname()[1]
+    # Bind to 127.0.0.1 (more reliable than 'localhost')
+    switch.bind(('127.0.0.1', 0))
+    switch_port = switch.getsockname()[1]
 
     print(f"Switch {switch_id} listening on port {switch_port} (UDP)")
 
@@ -107,7 +106,7 @@ def register_with_controller(switch_id, controller_host, controller_port):
         'port': switch_port
     }
 
-    switch_socket.sendto(
+    switch.sendto(
         json.dumps(register_request).encode(),
         (controller_host, controller_port)
     )
@@ -116,7 +115,7 @@ def register_with_controller(switch_id, controller_host, controller_port):
     print(f"Switch {switch_id} sent Register Request to Controller")
 
     # Receive Register Response from controller
-    data, addr = switch_socket.recvfrom(4096)
+    data, addr = switch.recvfrom(4096)
     response = json.loads(data.decode())
 
     if response['type'] == 'REGISTER_RESPONSE':
@@ -126,7 +125,7 @@ def register_with_controller(switch_id, controller_host, controller_port):
         print(f"Switch {switch_id} received Register Response")
         print(f"Neighbors: {neighbors}")
 
-        return switch_socket, neighbors
+        return switch, neighbors
 
     return None
 
@@ -134,7 +133,7 @@ def main():
 
     global LOG_FILE
 
-    #Check for number of arguments and exit if host/port not provided
+    # Check for number of arguments and exit if host/port not provided
     num_args = len(sys.argv)
     if num_args < 4:
         print ("switch.py <Id_self> <Controller hostname> <Controller Port>\n")
@@ -147,14 +146,25 @@ def main():
     LOG_FILE = 'switch' + str(my_id) + ".log"
 
     # Register with controller and get neighbor information
-    switch_socket, neighbors = register_with_controller(
+    switch, neighbors = register_with_controller(
         my_id, controller_host, controller_port
     )
 
     print(f"Switch {my_id} is running and connected to the network")
 
+    # Wait for routing update from controller
+    print(f"Switch {my_id} waiting for routing update...")
+    data, addr = switch.recvfrom(4096)
+    message = json.loads(data.decode())
+
+    if message['type'] == 'ROUTING_UPDATE':
+        routes = message['routes']
+        # Log routing table update
+        routing_table_update(routes)
+        print(f"Switch {my_id} received routing update with {len(routes)} routes")
+
     # Keep the switch running
-    # TODO: Implement neighbor discovery and routing protocols
+    # TODO: Implement neighbor discovery and keep-alive protocols
 
 if __name__ == "__main__":
     main()
