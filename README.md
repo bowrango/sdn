@@ -9,6 +9,22 @@ The `run_network.py` script starts multiple processes for the Controller and Swi
 python3 run_network.py 9000 Config/graph_2.txt
 ```
 
+### Periodic Checks (TODO)
+Each Switch and the Controller perform a set of routine checks:
+1. Each switch sends a `KEEP_ALIVE` message every K seconds to each of its neighboring switches that it thinks is "alive".
+2. Each switch sends a Topology Update message to the Controller every K seconds. The Topology Update message includes a set of "live" neighbors of that switch.
+3. If a switch A has not received a `KEEP_ALIVE` message from a neighboring switch B for `TIMEOUT` seconds, then switch A designates the link connecting it to switch B as down. Immediately, it sends a Topology Update message to the Controller containing its updated view of the list of "live" neighbors.
+4. Once switch A receives a `KEEP_ALIVE` message from a neighboring switch B that it previously considered unreachable, it immediately marks that neighbor as alive, updates the host/port information of the switch if needed, and sends a Topology Update to the Controller indicating its revised list of "live" neighbors
+
+### Link Failure (TODO)
+A link failure can be simulated with the `-f` flag, which kills the process corresponding to the neighboring switch. Restarting the process with the same switch ID ensures the switch can rejoin the network.
+```
+python switch.py <switch-ID> <Controller hostname> <Controller port> -f <neighbor-ID>
+``` 
+This says that the switch must run as usual, but the link to `<neighbor-ID>` failed. In this failure mode,
+the switch does not send `KEEP_ALIVE` messages to the switch with ID `<neighbor-ID>`, and
+should not process any `KEEP_ALIVE` messages from the switch with ID `<neighbor-ID>`.
+
 ### Logging
 
 Each switch process must log:

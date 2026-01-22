@@ -9,6 +9,7 @@ import sys
 import socket
 import json
 from datetime import date, datetime
+from typing import List, Tuple, Optional
 from common import *
 
 # Please do not modify the name of the log file, otherwise you will lose points because the grader won't be able to find your log file
@@ -21,8 +22,8 @@ LOG_FILE = "switch#.log" # The log file for switches are switch#.log, where # is
 # Timestamp
 # Register Request Sent
 
-def register_request_sent():
-    log = []
+def register_request_sent() -> None:
+    log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Register Request Sent\n")
     write_to_log(log)
@@ -32,8 +33,8 @@ def register_request_sent():
 # Timestamp
 # Register Response Received
 
-def register_response_received():
-    log = []
+def register_response_received() -> None:
+    log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Register Response Received\n")
     write_to_log(log) 
@@ -52,8 +53,8 @@ def register_response_received():
 # You should also include all of the Self routes in your routing_table argument -- e.g.,  Switch (ID = 4) should include the following entry: 		
 # 4,4:4
 
-def routing_table_update(routing_table):
-    log = []
+def routing_table_update(routing_table: List[RoutingEntry]) -> None:
+    log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append("Routing Update\n")
     for row in routing_table:
@@ -66,102 +67,103 @@ def routing_table_update(routing_table):
 # Timestamp
 # Neighbor Dead <Neighbor ID>
 
-def neighbor_dead(switch_id):
-    log = []
+def neighbor_dead(switch_id: int) -> None:
+    log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Neighbor Dead {switch_id}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 # "Unresponsive/Dead Neighbor comes back online" Format is below:
 #
 # Timestamp
 # Neighbor Alive <Neighbor ID>
 
-def neighbor_alive(switch_id):
-    log = []
+def neighbor_alive(switch_id: int) -> None:
+    log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Neighbor Alive {switch_id}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
-def write_to_log(log):
+def write_to_log(log: List[str]) -> None:
     with open(LOG_FILE, 'a+') as log_file:
         log_file.write("\n\n")
         # Write to log
         log_file.writelines(log)
 
-def register_with_controller(switch_id, controller_host, controller_port):
+def register_with_controller(sid: int, host: str, port: int) -> Optional[Tuple[socket.socket, List[NeighborInfo]]]:
     # Create a UDP socket for communication with controller and other switches
-    switch = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    switch.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
     # Bind to localhost
-    switch.bind((LOCALHOST, 0))
-    switch_port = switch.getsockname()[1]
+    sock.bind((LOCALHOST, 0))
+    sport = sock.getsockname()[1]
 
-    print(f"Switch {switch_id} listening on port {switch_port} (UDP)")
+    print(f"Switch {sid} listening on port {sport} (UDP)")
 
     # Send Register Request to controller via UDP
-    register_request = {
+    req = {
         KEY_TYPE: MSG_REGISTER_REQUEST,
-        KEY_SWITCH_ID: switch_id,
-        KEY_PORT: switch_port
+        KEY_SWITCH_ID: sid,
+        KEY_PORT: sport
     }
 
-    switch.sendto(
-        json.dumps(register_request).encode(),
-        (controller_host, controller_port)
+    sock.sendto(
+        json.dumps(req).encode(),
+        (host, port)
     )
     register_request_sent()
 
-    print(f"Switch {switch_id} sent Register Request to Controller")
+    print(f"Switch {sid} sent Register Request to Controller")
 
     # Receive Register Response from controller
-    data, addr = switch.recvfrom(BUFFER_SIZE)
-    response = json.loads(data.decode())
+    data, _ = sock.recvfrom(BUFFER_SIZE)
+    resp = json.loads(data.decode())
 
-    if response[KEY_TYPE] == MSG_REGISTER_RESPONSE:
+    if resp[KEY_TYPE] == MSG_REGISTER_RESPONSE:
         register_response_received()
-        neighbors = response[KEY_NEIGHBORS]
+        nbrs = resp[KEY_NEIGHBORS]
 
-        print(f"Switch {switch_id} received Register Response")
-        print(f"Neighbors: {neighbors}")
+        print(f"Switch {sid} received Register Response")
+        print(f"Neighbors: {nbrs}")
 
-        return switch, neighbors
+        return sock, nbrs
 
     return None
 
-def main():
+def main() -> None:
 
     global LOG_FILE
 
     # Check for number of arguments and exit if host/port not provided
-    num_args = len(sys.argv)
-    if num_args < 4:
+    if len(sys.argv) < 4:
         print ("switch.py <Id_self> <Controller hostname> <Controller Port>\n")
         sys.exit(1)
 
-    my_id = int(sys.argv[1])
-    controller_host = sys.argv[2]
-    controller_port = int(sys.argv[3])
+    sid: int = int(sys.argv[1])
+    host: str = sys.argv[2]
+    port: int = int(sys.argv[3])
 
-    LOG_FILE = 'switch' + str(my_id) + ".log"
+    LOG_FILE = 'switch' + str(sid) + ".log"
 
     # Register with controller and get neighbor information
-    switch, neighbors = register_with_controller(
-        my_id, controller_host, controller_port
-    )
+    result = register_with_controller(sid, host, port)
+    if result is None:
+        sys.exit(1)
 
-    print(f"Switch {my_id} is running and connected to the network")
+    sock, nbrs = result
+
+    print(f"Switch {sid} is running and connected to the network")
 
     # Wait for routing update from controller
-    print(f"Switch {my_id} waiting for routing update...")
-    data, addr = switch.recvfrom(BUFFER_SIZE)
-    message = json.loads(data.decode())
-    if message[KEY_TYPE] == MSG_ROUTING_UPDATE:
-        routes = message[KEY_ROUTES]
+    print(f"Switch {sid} waiting for routing update...")
+    data, _ = sock.recvfrom(BUFFER_SIZE)
+    msg = json.loads(data.decode())
+    if msg[KEY_TYPE] == MSG_ROUTING_UPDATE:
+        routes = msg[KEY_ROUTES]
         # Log routing table update
         routing_table_update(routes)
-        print(f"Switch {my_id} received routing update with {len(routes)} routes")
+        print(f"Switch {sid} received routing update with {len(routes)} routes")
 
     # Keep the switch running
     # TODO: Implement neighbor discovery and keep-alive protocols
