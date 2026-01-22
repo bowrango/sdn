@@ -9,6 +9,7 @@ import sys
 import socket
 import json
 from datetime import date, datetime
+from common import *
 
 # Please do not modify the name of the log file, otherwise you will lose points because the grader won't be able to find your log file
 LOG_FILE = "switch#.log" # The log file for switches are switch#.log, where # is the id of that switch (i.e. switch0.log, switch1.log). The code for replacing # with a real number has been given to you in the main function.
@@ -93,17 +94,17 @@ def register_with_controller(switch_id, controller_host, controller_port):
     switch = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     switch.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-    # Bind to 127.0.0.1 (more reliable than 'localhost')
-    switch.bind(('127.0.0.1', 0))
+    # Bind to localhost
+    switch.bind((LOCALHOST, 0))
     switch_port = switch.getsockname()[1]
 
     print(f"Switch {switch_id} listening on port {switch_port} (UDP)")
 
     # Send Register Request to controller via UDP
     register_request = {
-        'type': 'REGISTER_REQUEST',
-        'switch_id': switch_id,
-        'port': switch_port
+        KEY_TYPE: MSG_REGISTER_REQUEST,
+        KEY_SWITCH_ID: switch_id,
+        KEY_PORT: switch_port
     }
 
     switch.sendto(
@@ -115,12 +116,12 @@ def register_with_controller(switch_id, controller_host, controller_port):
     print(f"Switch {switch_id} sent Register Request to Controller")
 
     # Receive Register Response from controller
-    data, addr = switch.recvfrom(4096)
+    data, addr = switch.recvfrom(BUFFER_SIZE)
     response = json.loads(data.decode())
 
-    if response['type'] == 'REGISTER_RESPONSE':
+    if response[KEY_TYPE] == MSG_REGISTER_RESPONSE:
         register_response_received()
-        neighbors = response['neighbors']
+        neighbors = response[KEY_NEIGHBORS]
 
         print(f"Switch {switch_id} received Register Response")
         print(f"Neighbors: {neighbors}")
@@ -154,11 +155,10 @@ def main():
 
     # Wait for routing update from controller
     print(f"Switch {my_id} waiting for routing update...")
-    data, addr = switch.recvfrom(4096)
+    data, addr = switch.recvfrom(BUFFER_SIZE)
     message = json.loads(data.decode())
-
-    if message['type'] == 'ROUTING_UPDATE':
-        routes = message['routes']
+    if message[KEY_TYPE] == MSG_ROUTING_UPDATE:
+        routes = message[KEY_ROUTES]
         # Log routing table update
         routing_table_update(routes)
         print(f"Switch {my_id} received routing update with {len(routes)} routes")

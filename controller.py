@@ -9,7 +9,8 @@ import sys
 import socket
 import json
 from datetime import date, datetime
-import heapq
+import networkx as nx
+from common import *
 
 # Please do not modify the name of the log file, otherwise you will lose points because the grader won't be able to find your log file
 LOG_FILE = "Controller.log"
@@ -138,7 +139,7 @@ def bootstrap(port, config_file):
     # Controller binds to a well-known port number
     controller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     controller.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    controller.bind(('127.0.0.1', port))
+    controller.bind((LOCALHOST, port))
 
     print(f"Controller listening on port {port} (UDP)")
 
@@ -150,20 +151,20 @@ def bootstrap(port, config_file):
 
     while len(switches) < num_switches:
         # Receive Register Request from switch
-        data, addr = controller.recvfrom(1024)
+        data, addr = controller.recvfrom(BUFFER_SIZE)
         message = json.loads(data.decode())
 
-        if message['type'] == 'REGISTER_REQUEST':
-            switch_id = message['switch_id']
-            switch_port = message['port']
+        if message[KEY_TYPE] == MSG_REGISTER_REQUEST:
+            switch_id = message[KEY_SWITCH_ID]
+            switch_port = message[KEY_PORT]
 
             # Log the Register Request
             register_request_received(switch_id)
 
             # Store switch information
             switches[switch_id] = {
-                'host': addr[0],
-                'port': switch_port
+                KEY_HOST: addr[0],
+                KEY_PORT: switch_port
             }
 
             print(f"Switch {switch_id} registered from {addr[0]}:{switch_port}")
@@ -176,88 +177,68 @@ def bootstrap(port, config_file):
         neighbors = []
         for neighbor_id, dist in topology[switch_id]:
             neighbor_info = {
-                'id': neighbor_id,
-                'alive': True,
-                'host': switches[neighbor_id]['host'],
-                'port': switches[neighbor_id]['port']
+                KEY_NEIGHBOR_ID: neighbor_id,
+                KEY_ALIVE: True,
+                KEY_HOST: switches[neighbor_id][KEY_HOST],
+                KEY_PORT: switches[neighbor_id][KEY_PORT]
             }
             neighbors.append(neighbor_info)
 
         # Send Register Response
         response = {
-            'type': 'REGISTER_RESPONSE',
-            'neighbors': neighbors
+            KEY_TYPE: MSG_REGISTER_RESPONSE,
+            KEY_NEIGHBORS: neighbors
         }
         controller.sendto(
             json.dumps(response).encode(),
-            (switch_info['host'], switch_info['port'])
+            (switch_info[KEY_HOST], switch_info[KEY_PORT])
         )
         register_response_sent(switch_id)
         print(f"Sent Register Response to switch {switch_id}")
 
     return controller, switches, topology
 
-def dijkstra(source, topology, num_switches):
-    """Compute shortest paths from source to all other switches using Dijkstra's algorithm"""
-    # Initialize distances and previous nodes
-    distances = {i: float('inf') for i in range(num_switches)}
-    distances[source] = 0
-    previous = {i: None for i in range(num_switches)}
-    visited = set()
+def build_graph(topology, num_switches):
+    """Build a networkx graph from the topology dictionary"""
+    G = nx.Graph()
+    G.add_nodes_from(range(num_switches))
 
-    # Priority queue: (distance, node)
-    pq = [(0, source)]
-    while pq:
-        current_dist, current = heapq.heappop(pq)
-        if current in visited:
-            continue
+    # Add edges with weights
+    for switch_id, neighbors in topology.items():
+        for neighbor_id, cost in neighbors:
+            G.add_edge(switch_id, neighbor_id, weight=cost)
 
-        visited.add(current)
+    return G
 
-        for neighbor, cost in topology.get(current, []):
-            distance = current_dist + cost
-            if distance < distances[neighbor]:
-                distances[neighbor] = distance
-                previous[neighbor] = current
-                heapq.heappush(pq, (distance, neighbor))
-
-    # Build next hop table
-    table = {}
-    for dest in range(num_switches):
-        if dest == source:
-            table[dest] = source
-        elif distances[dest] == float('inf'):
-            table[dest] = -1
-        else:
-            # Trace back to find first hop
-            path_node = dest
-            while previous[path_node] != source and previous[path_node] is not None:
-                path_node = previous[path_node]
-            table[dest] = path_node if previous[path_node] == source else -1
-
-    return distances, table
-
-def compute_routing_tables(topology, num_switches, alive_switches=None):
-    """Compute routing tables for all switches"""
+def compute_routing_tables(topology, num_switches):
+    """Compute routing tables for all switches using networkx"""
+    G = build_graph(topology, num_switches)
     routing_tables = []
+
     for switch_id in range(num_switches):
-        distances, next_hops = dijkstra(switch_id, topology, num_switches)
+        # Compute shortest paths from this switch to all others
+        try:
+            lengths = nx.single_source_dijkstra_path_length(G, switch_id, weight='weight')
+            paths = nx.single_source_dijkstra_path(G, switch_id, weight='weight')
+        except nx.NodeNotFound:
+            lengths = {}
+            paths = {}
 
         for dest_id in range(num_switches):
-            if distances[dest_id] == float('inf'):
-                # Unreachable
-                routing_tables.append([switch_id, dest_id, -1, 9999])
+            if dest_id == switch_id:
+                # Self
+                routing_tables.append([switch_id, dest_id, switch_id, SELF_DISTANCE])
+            elif dest_id in lengths:
+                # Reachable. Next hop is the first node in the path after source
+                next_hop = paths[dest_id][1] if len(paths[dest_id]) > 1 else dest_id
+                routing_tables.append([switch_id, dest_id, next_hop, int(lengths[dest_id])])
             else:
-                routing_tables.append([
-                    switch_id,
-                    dest_id,
-                    next_hops[dest_id],
-                    int(distances[dest_id])
-                ])
+                # Unreachable
+                routing_tables.append([switch_id, dest_id, UNREACHABLE_HOP, UNREACHABLE_DISTANCE])
 
     return routing_tables
 
-def send_routing_updates(controller_socket, switches, routing_tables):
+def send_routing_updates(controller, switches, routing_tables):
     """Send routing updates to all switches"""
     # Group routing table entries by switch
     switch_routes = {}
@@ -271,13 +252,13 @@ def send_routing_updates(controller_socket, switches, routing_tables):
     for switch_id, routes in switch_routes.items():
         if switch_id in switches:
             routing_update = {
-                'type': 'ROUTING_UPDATE',
-                'routes': routes
+                KEY_TYPE: MSG_ROUTING_UPDATE,
+                KEY_ROUTES: routes
             }
 
-            controller_socket.sendto(
+            controller.sendto(
                 json.dumps(routing_update).encode(),
-                (switches[switch_id]['host'], switches[switch_id]['port'])
+                (switches[switch_id][KEY_HOST], switches[switch_id][KEY_PORT])
             )
             print(f"Sent Routing Update to switch {switch_id}")
 
