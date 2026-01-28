@@ -7,10 +7,11 @@ Email: mbowring@purdue.edu
 
 import sys
 import socket
-import json
-from datetime import date, datetime
+import struct
+from datetime import datetime
 import heapq
-from typing import Dict, List, Tuple
+import hashlib
+from typing import Dict, List, Tuple, Optional
 from common import *
 
 # Please do not modify the name of the log file, otherwise you will lose points because the grader won't be able to find your log file
@@ -38,7 +39,7 @@ def register_response_sent(switch_id: int) -> None:
     log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Register Response {switch_id}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 # For the parameter "routing_table", it should be a list of lists in the form of [[...], [...], ...]. 
 # Within each list in the outermost list, the first element is <Switch ID>. The second is <Dest ID>, and the third is <Next Hop>, and the fourth is <Shortest distance>
@@ -81,7 +82,7 @@ def topology_update_link_dead(switch_id_1: int, switch_id_2: int) -> None:
     log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Link Dead {switch_id_1},{switch_id_2}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 # "Topology Update: Switch Dead" Format is below:
 #
@@ -92,7 +93,7 @@ def topology_update_switch_dead(switch_id: int) -> None:
     log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Switch Dead {switch_id}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 # "Topology Update: Switch Alive" Format is below:
 #
@@ -103,13 +104,91 @@ def topology_update_switch_alive(switch_id: int) -> None:
     log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Switch Alive {switch_id}\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 def write_to_log(log: List[str]) -> None:
     with open(LOG_FILE, 'a+') as log_file:
         log_file.write("\n\n")
         # Write to log
         log_file.writelines(log)
+
+class RoutingCache:
+    def __init__(self) -> None:
+        self._topo_hash: Optional[str] = None
+        self._routes: Optional[List[RoutingEntry]] = None
+        self._n: int = 0
+
+    def get_routes(self, topo: Topology, n: int) -> Tuple[List[RoutingEntry], bool]:
+        topo_hash = self._compute_topo_hash(topo)
+        if self._routes is not None and self._topo_hash == topo_hash and self._n == n:
+            return self._routes, False
+
+        # Recompute new topology
+        self._routes = self._compute_routing_tables(topo, n)
+        self._topo_hash = topo_hash
+        self._n = n
+        return self._routes, True
+    
+    def clear(self) -> None:
+        self._topo_hash = None
+        self._routes = None
+
+    def _compute_topo_hash(self, topo: Topology) -> str:
+        # Sort topology for consistent hashing
+        topo_str = ""
+        for sid in sorted(topo.keys()):
+            neighbors = sorted(topo[sid])
+            topo_str += f"{sid}:{neighbors};"
+        return hashlib.md5(topo_str.encode()).hexdigest()
+
+    def _compute_routing_tables(self, topo: Topology, n: int) -> List[RoutingEntry]:
+        routes: List[RoutingEntry] = []
+        for sid in range(n):
+            dist, hop = self._dijkstra(sid, topo, n)
+            for did in range(n):
+                if dist[did] == float('inf'):
+                    routes.append([sid, did, UNREACHABLE_HOP, UNREACHABLE_DISTANCE])
+                else:
+                    routes.append([sid, did, hop[did], int(dist[did])])
+
+        return routes
+
+    def _dijkstra(self, src: int, topo: Topology, n: int) -> Tuple[Dict[int, float], Dict[int, int]]:
+        # Compute shortest path from the source switch to all reachable switches
+        dist = {i: float('inf') for i in range(n)}
+        dist[src] = 0
+        prev = {i: None for i in range(n)}
+        vis = set()
+
+        pq = [(0, src)]
+        while pq:
+            d, u = heapq.heappop(pq)
+            if u in vis:
+                continue
+
+            vis.add(u)
+
+            for v, cost in topo.get(u, []):
+                alt = d + cost
+                if alt < dist[v]:
+                    dist[v] = alt
+                    prev[v] = u
+                    heapq.heappush(pq, (alt, v))
+
+        # Build next hop table
+        hop: Dict[int, int] = {}
+        for dst in range(n):
+            if dst == src:
+                hop[dst] = src
+            elif dist[dst] == float('inf'):
+                hop[dst] = UNREACHABLE_HOP
+            else:
+                node = dst
+                while prev[node] != src and prev[node] is not None:
+                    node = prev[node]
+                hop[dst] = node if prev[node] == src else UNREACHABLE_HOP
+
+        return dist, hop
 
 def bootstrap(port: int, cfg: str) -> Tuple[socket.socket, Dict[int, SwitchInfo], Topology]:
     # Register Switches with the Controller
@@ -142,35 +221,25 @@ def bootstrap(port: int, cfg: str) -> Tuple[socket.socket, Dict[int, SwitchInfo]
     ctrl.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     ctrl.bind((LOCALHOST, port))
 
-    print(f"Controller listening on port {port} (UDP)")
-
     # Store information about registered switches
     sw: Dict[int, SwitchInfo] = {}
-
-    # Receive Register Requests from all switches
-    print(f"Waiting for {n} switches to register...")
-
     while len(sw) < n:
         # Receive Register Request from switch
         data, addr = ctrl.recvfrom(BUFFER_SIZE)
-        msg = json.loads(data.decode())
+        msg_type = struct.unpack('!B', data[:1])[0]
 
-        if msg[KEY_TYPE] == MSG_REGISTER_REQUEST:
-            sid = msg[KEY_SWITCH_ID]
-            sport = msg[KEY_PORT]
+        assert msg_type == BIN_REGISTER_REQUEST
 
-            # Log the Register Request
-            register_request_received(sid)
+        sid, sport = deserialize_register_request(data)
 
-            # Store switch information
-            sw[sid] = {
-                KEY_HOST: addr[0],
-                KEY_PORT: sport
-            }
+        # Log the Register Request
+        register_request_received(sid)
 
-            print(f"Switch {sid} registered from {addr[0]}:{sport}")
-
-    print(f"All {n} switches registered successfully")
+        # Store switch information
+        sw[sid] = {
+            KEY_HOST: addr[0],
+            KEY_PORT: sport
+        }
 
     # Send Register Response to each switch once they've been registered
     for sid, info in sw.items():
@@ -185,76 +254,16 @@ def bootstrap(port: int, cfg: str) -> Tuple[socket.socket, Dict[int, SwitchInfo]
             }
             nbrs.append(nbr)
 
-        # Send Register Response
-        resp = {
-            KEY_TYPE: MSG_REGISTER_RESPONSE,
-            KEY_NEIGHBORS: nbrs
-        }
+        # Send Register Response (binary format)
         ctrl.sendto(
-            json.dumps(resp).encode(),
+            serialize_register_response(nbrs),
             (info[KEY_HOST], info[KEY_PORT])
         )
         register_response_sent(sid)
-        print(f"Sent Register Response to switch {sid}")
 
     return ctrl, sw, topo
 
-def dijkstra(src: int, topo: Topology, n: int) -> Tuple[Dict[int, float], Dict[int, int]]:
-    """Find shortest paths using Dijkstra's algorithm"""
-    dist = {i: float('inf') for i in range(n)}
-    dist[src] = 0
-    prev = {i: None for i in range(n)}
-    vis = set()
-
-    pq = [(0, src)]
-    while pq:
-        d, u = heapq.heappop(pq)
-        if u in vis:
-            continue
-
-        vis.add(u)
-
-        for v, cost in topo.get(u, []):
-            alt = d + cost
-
-            if alt < dist[v]:
-                dist[v] = alt
-                prev[v] = u
-                heapq.heappush(pq, (alt, v))
-
-    # Build next hop table
-    hop: Dict[int, int] = {}
-    for dst in range(n):
-        if dst == src:
-            hop[dst] = src
-        elif dist[dst] == float('inf'):
-            hop[dst] = UNREACHABLE_HOP
-        else:
-            # Trace back to find first hop
-            node = dst
-            while prev[node] != src and prev[node] is not None:
-                node = prev[node]
-            hop[dst] = node if prev[node] == src else UNREACHABLE_HOP
-
-    return dist, hop
-
-def compute_routing_tables(topo: Topology, n: int) -> List[RoutingEntry]:
-    """Compute routing tables for all switches"""
-    routes: List[RoutingEntry] = []
-
-    for sid in range(n):
-        dist, hop = dijkstra(sid, topo, n)
-
-        for did in range(n):
-            if dist[did] == float('inf'):
-                routes.append([sid, did, UNREACHABLE_HOP, UNREACHABLE_DISTANCE])
-            else:
-                routes.append([sid, did, hop[did], int(dist[did])])
-
-    return routes
-
 def send_routing_updates(ctrl: socket.socket, sw: Dict[int, SwitchInfo], routes: List[RoutingEntry]) -> None:
-    """Send routing updates to all switches"""
     # Group routing table entries by switch
     tbl: Dict[int, List[RoutingEntry]] = {}
     for e in routes:
@@ -263,36 +272,32 @@ def send_routing_updates(ctrl: socket.socket, sw: Dict[int, SwitchInfo], routes:
             tbl[sid] = []
         tbl[sid].append(e)
 
-    # Send routing update to each switch
+    # Send routing update to each switch (binary format)
     for sid, rt in tbl.items():
         if sid in sw:
-            msg = {
-                KEY_TYPE: MSG_ROUTING_UPDATE,
-                KEY_ROUTES: rt
-            }
-
             ctrl.sendto(
-                json.dumps(msg).encode(),
+                serialize_routing_update(rt),
                 (sw[sid][KEY_HOST], sw[sid][KEY_PORT])
             )
-            print(f"Sent Routing Update to switch {sid}")
 
 def main() -> None:
     # Check for number of arguments and exit if host/port not provided
     num_args: int = len(sys.argv)
     if num_args < 3:
-        print ("Usage: python controller.py <port> <config file>\n")
+        print("Usage: python controller.py <port> <config file>\n")
         sys.exit(1)
 
     port = int(sys.argv[1])
     cfg = str(sys.argv[2])
+
+    cache = RoutingCache()
 
     # Setup socket connection to switches
     ctrl, sw, topo = bootstrap(port, cfg)
 
     # Compute routing tables
     n = len(sw)
-    routes = compute_routing_tables(topo, n)
+    routes, was_recomputed = cache.get_routes(topo, n)
 
     # Log routing update
     routing_table_update(routes)
@@ -300,10 +305,8 @@ def main() -> None:
     # Send routing updates to all switches
     send_routing_updates(ctrl, sw, routes)
 
-    print("\nRouting computation and updates complete")
-
     # Keep controller running
-    # TODO: Handle topology changes (switch/link failures)
+    # TODO: Handle topology changes (switch/link failures). Only broadcast updates when the topology get recomputed
 
 if __name__ == "__main__":
     main()

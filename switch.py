@@ -7,8 +7,8 @@ Email: mbowring@purdue.edu
 
 import sys
 import socket
-import json
-from datetime import date, datetime
+import struct
+from datetime import datetime
 from typing import List, Tuple, Optional
 from common import *
 
@@ -37,7 +37,7 @@ def register_response_received() -> None:
     log: List[str] = []
     log.append(str(datetime.time(datetime.now())) + "\n")
     log.append(f"Register Response Received\n")
-    write_to_log(log) 
+    write_to_log(log)
 
 # For the parameter "routing_table", it should be a list of lists in the form of [[...], [...], ...]. 
 # Within each list in the outermost list, the first element is <Switch ID>. The second is <Dest ID>, and the third is <Next Hop>.
@@ -99,45 +99,30 @@ def register_with_controller(sid: int, host: str, port: int) -> Optional[Tuple[s
     sock.bind((LOCALHOST, 0))
     sport = sock.getsockname()[1]
 
-    print(f"Switch {sid} listening on port {sport} (UDP)")
-
-    # Send Register Request to controller via UDP
-    req = {
-        KEY_TYPE: MSG_REGISTER_REQUEST,
-        KEY_SWITCH_ID: sid,
-        KEY_PORT: sport
-    }
-
+    # Send Register Request to controller via UDP (binary format)
     sock.sendto(
-        json.dumps(req).encode(),
+        serialize_register_request(sid, sport),
         (host, port)
     )
     register_request_sent()
 
-    print(f"Switch {sid} sent Register Request to Controller")
-
-    # Receive Register Response from controller
+    # Receive Register Response from controller (binary format)
     data, _ = sock.recvfrom(BUFFER_SIZE)
-    resp = json.loads(data.decode())
+    msg_type = struct.unpack('!B', data[:1])[0]
 
-    if resp[KEY_TYPE] == MSG_REGISTER_RESPONSE:
+    if msg_type == BIN_REGISTER_RESPONSE:
         register_response_received()
-        nbrs = resp[KEY_NEIGHBORS]
-
-        print(f"Switch {sid} received Register Response")
-        print(f"Neighbors: {nbrs}")
-
+        nbrs = deserialize_register_response(data)
         return sock, nbrs
 
     return None
 
 def main() -> None:
-
     global LOG_FILE
 
     # Check for number of arguments and exit if host/port not provided
     if len(sys.argv) < 4:
-        print ("switch.py <Id_self> <Controller hostname> <Controller Port>\n")
+        print("switch.py <Id_self> <Controller hostname> <Controller Port>\n")
         sys.exit(1)
 
     sid: int = int(sys.argv[1])
@@ -153,17 +138,13 @@ def main() -> None:
 
     sock, nbrs = result
 
-    print(f"Switch {sid} is running and connected to the network")
-
-    # Wait for routing update from controller
-    print(f"Switch {sid} waiting for routing update...")
+    # Receive routing update (binary format)
     data, _ = sock.recvfrom(BUFFER_SIZE)
-    msg = json.loads(data.decode())
-    if msg[KEY_TYPE] == MSG_ROUTING_UPDATE:
-        routes = msg[KEY_ROUTES]
+    msg_type = struct.unpack('!B', data[:1])[0]
+    if msg_type == BIN_ROUTING_UPDATE:
+        routes = deserialize_routing_update(data)
         # Log routing table update
         routing_table_update(routes)
-        print(f"Switch {sid} received routing update with {len(routes)} routes")
 
     # Keep the switch running
     # TODO: Implement neighbor discovery and keep-alive protocols

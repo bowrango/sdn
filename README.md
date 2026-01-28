@@ -1,16 +1,16 @@
 A Simple Software Defined Network
 
-The Controller keeps track of the entire Switch network. The switches, once started, register with the controller, which computes shortest paths and then sends appropriate responses to the switches.
+The Controller keeps track of the entire Switch network. The switches, once started, register with the Controller, which computes shortest paths and then sends appropriate responses to the switches. The Controller caches routing tables and only recomputes when the topology changes during periodic updates. The socket messages use a `struct`-based binary format.
 
 ### Usage
 
-The `run_network.py` script starts multiple processes for the Controller and Switches. It takes a port number and network configuration
+The `run_network.py` script starts multiple processes for the Controller and switches. It takes a port number and network configuration
 ```
 python3 run_network.py 9000 Config/graph_2.txt
 ```
 
 ### Periodic Checks (TODO)
-Each Switch and the Controller perform a set of routine checks:
+Each switch and the Controller perform a set of routine checks:
 1. Each switch sends a `KEEP_ALIVE` message every K seconds to each of its neighboring switches that it thinks is "alive".
 2. Each switch sends a Topology Update message to the Controller every K seconds. The Topology Update message includes a set of "live" neighbors of that switch.
 3. If a switch A has not received a `KEEP_ALIVE` message from a neighboring switch B for `TIMEOUT` seconds, then switch A designates the link connecting it to switch B as down. Immediately, it sends a Topology Update message to the Controller containing its updated view of the list of "live" neighbors.
@@ -27,7 +27,7 @@ should not process any `KEEP_ALIVE` messages from the switch with ID `<neighbor-
 
 ### Logging
 
-Each switch process must log:
+Each switch logs the following events:
 1. When a Register Request is sent.
 ```
 <switch-ID> Register_Request
@@ -41,7 +41,7 @@ Each switch process must log:
 4. When a previously unreachable switch is now reachable.
 5. The routing table that it gets from the Controller each time that the table is updated.
 
-The Controller process must log:
+The Controller logs the following events:
 1. When a Register Request is received.
 2. When all the Register Responses are sent (send one Register Response to each switch).
 3. When it detects a change in topology (a switch or a link is down or up).
