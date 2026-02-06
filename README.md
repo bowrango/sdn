@@ -1,56 +1,54 @@
-A Simple Software Defined Network
+# Software Defined Network
 
-The Controller keeps track of the entire Switch network. The switches, once started, register with the Controller, which computes shortest paths and then sends appropriate responses to the switches. The Controller caches routing tables and only recomputes when the topology changes during periodic updates. The socket messages use a `struct`-based binary format.
+A centralized SDN controller with distributed switches communicating over UDP. The controller computes shortest-path routing tables using Dijkstra's algorithm and pushes them to switches. Switches exchange `KEEP_ALIVE` heartbeats with neighbors and report topology changes to the controller, which recomputes routes only when the network topology changes. All messages use a `struct`-based binary protocol.
 
-### Usage
+## Quick Start
 
-The `run_network.py` script starts multiple processes for the Controller and switches. It takes a port number and network configuration
+Launch an entire network (macOS only, opens separate Terminal windows):
 ```
-python3 run_network.py 9000 Config/graph_2.txt
+python3 run_network.py <port> <config_file>
+```
+Example:
+```
+python3 run_network.py 9000 Config/graph_3.txt
 ```
 
-### Periodic Checks (TODO)
-Each switch and the Controller perform a set of routine checks:
-1. Each switch sends a `KEEP_ALIVE` message every K seconds to each of its neighboring switches that it thinks is "alive".
-2. Each switch sends a Topology Update message to the Controller every K seconds. The Topology Update message includes a set of "live" neighbors of that switch.
-3. If a switch A has not received a `KEEP_ALIVE` message from a neighboring switch B for `TIMEOUT` seconds, then switch A designates the link connecting it to switch B as down. Immediately, it sends a Topology Update message to the Controller containing its updated view of the list of "live" neighbors.
-4. Once switch A receives a `KEEP_ALIVE` message from a neighboring switch B that it previously considered unreachable, it immediately marks that neighbor as alive, updates the host/port information of the switch if needed, and sends a Topology Update to the Controller indicating its revised list of "live" neighbors
+## Manual Start
 
-### Link Failure (TODO)
-A link failure can be simulated with the `-f` flag, which kills the process corresponding to the neighboring switch. Restarting the process with the same switch ID ensures the switch can rejoin the network.
-```
-python switch.py <switch-ID> <Controller hostname> <Controller port> -f <neighbor-ID>
-``` 
-This says that the switch must run as usual, but the link to `<neighbor-ID>` failed. In this failure mode,
-the switch does not send `KEEP_ALIVE` messages to the switch with ID `<neighbor-ID>`, and
-should not process any `KEEP_ALIVE` messages from the switch with ID `<neighbor-ID>`.
+Start the controller and each switch individually. The controller must be started first.
 
-### Logging
+```
+python3 controller.py <port> <config_file>
+python3 switch.py <switch_id> <controller_host> <controller_port>
+```
 
-Each switch logs the following events:
-1. When a Register Request is sent.
+Example: run a 3-switch network:
 ```
-<switch-ID> Register_Request
+python3 controller.py 9000 Config/graph_3.txt
+python3 switch.py 0 localhost 9000
+python3 switch.py 1 localhost 9000
+python3 switch.py 2 localhost 9000
 ```
-2. When the Register Response is received.
-```
-<number-of-neighbors>
-<neighbor-ID> <neighbor hostname> <neighbor port> (for each neighbor)
-```
-3. When any neighboring switches are considered unreachable.
-4. When a previously unreachable switch is now reachable.
-5. The routing table that it gets from the Controller each time that the table is updated.
 
-The Controller logs the following events:
-1. When a Register Request is received.
-2. When all the Register Responses are sent (send one Register Response to each switch).
-3. When it detects a change in topology (a switch or a link is down or up).
+Simulate a link failure with the `-f` flag. The switch will not send or process `KEEP_ALIVE` messages to/from the specified neighbor:
+
 ```
-<switch-ID>
-<neighbor-ID> <True/False indicating whether the neighbor is alive> (for all neighbors)
+python3 switch.py <switch_id> <controller_host> <controller_port> -f <neighbor_id>
 ```
-4. Whenever it recomputes (or computes for the first time) the routes.
+Example:
 ```
-<switch-ID>
-<dest-ID> <Next Hop to reach dest> (for all switches in the network)
+python3 switch.py 0 localhost 9000 -f 1
 ```
+This simulates a failed link between switch 0 and switch 1. After `TIMEOUT` (6s), both sides detect the dead link and the controller recomputes routes.
+
+To simulate a full switch failure, kill the switch process (Ctrl+C). Restarting a switch with the same ID will re-register it with the controller and rejoin the network.
+
+## Details
+
+Each switch sends a `REGISTER_REQUEST` to the controller on startup. Once all switches have registered, the controller responds with neighbor information and computes initial routing tables using Dijkstra's algorithm.
+
+Every 2 seconds, each switch sends `KEEP_ALIVE` messages to its alive neighbors and a `TOPOLOGY_UPDATE` to the controller. If no `KEEP_ALIVE` is received from a neighbor for 6 seconds, the link is marked dead and the controller is notified. The controller also monitors for full switch death if no `TOPOLOGY_UPDATE` arrives within 6 seconds.
+
+The controller caches routing tables and only recomputes when the topology hash changes. Updated routes are pushed to all alive switches.
+
+Each switch writes to `switch<id>.log` and the controller writes to `Controller.log`. Logged events include register requests and responses, neighbor and switch dead/alive transitions, link failures, and routing table updates.
