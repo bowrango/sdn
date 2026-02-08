@@ -30,11 +30,12 @@ def open_terminal(command, title):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python run_network.py <controller_port> <config_file>")
+        print("Usage: python run_network.py <controller_port> <config_file> [-p]")
         sys.exit(1)
 
     controller_port = int(sys.argv[1])
     config_file = sys.argv[2]
+    enable_perf = "-p" in sys.argv
 
     if not os.path.exists(config_file):
         print(f"Error: Config file '{config_file}' not found")
@@ -46,6 +47,15 @@ def main():
     print(f"Starting network with {num_switches} switches...")
     print(f"Controller port: {controller_port}")
     print(f"Config file: {config_file}")
+    if enable_perf:
+        print("Performance monitor: enabled")
+
+    # Start performance monitor first so it catches initial registration
+    if enable_perf:
+        perf_cmd = f"python perf.py {config_file}"
+        print(f"\nStarting perf monitor: {perf_cmd}")
+        open_terminal(perf_cmd, "Perf Monitor")
+        time.sleep(0.5)
 
     # Start controller
     controller_cmd = f"python controller.py {controller_port} {config_file}"
@@ -65,6 +75,8 @@ def main():
     print(f"\nNetwork started successfully!")
     print(f"- 1 Controller terminal")
     print(f"- {num_switches} Switch terminals")
+    if enable_perf:
+        print(f"- 1 Perf Monitor terminal (writing to Performance.log)")
     print("\nTo stop the network, close all terminal windows or press Ctrl+C in each")
 
 if __name__ == "__main__":

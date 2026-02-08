@@ -39,9 +39,16 @@ Example:
 ```
 python3 switch.py 0 localhost 9000 -f 1
 ```
-This simulates a failed link between switch 0 and switch 1. After `TIMEOUT` (6s), both sides detect the dead link and the controller recomputes routes.
+This simulates a failed link between switch 0 and switch 1. After `TIMEOUT` (6s), both sides detect the dead link and the controller recomputes routes. To simulate a full switch failure, kill the switch process (Ctrl+C). Restarting a switch with the same ID will re-register it with the controller and rejoin the network.
 
-To simulate a full switch failure, kill the switch process (Ctrl+C). Restarting a switch with the same ID will re-register it with the controller and rejoin the network.
+Run `perf.py` alongside the network to log message rates, estimated bandwidth, and propagation delays to `Performance.log`:
+```
+python3 perf.py <config_file> [--interval SECONDS]
+```
+The default reporting interval is 10 seconds. With the automated launcher, pass `-p`:
+```
+python3 run_network.py 9000 Config/graph_3.txt -p
+```
 
 ## Details
 
